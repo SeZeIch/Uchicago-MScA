@@ -1,0 +1,281 @@
+LIBNAME h "D:COMPANY SAS\new campaign project";
+%let codedir= %str(D:\COMPANY SAS\EDA);
+FILENAME codedir "&codedir";
+ods html close;
+ods preferences;
+ods html;
+
+/*2. descriptive statistics and datamanipulation */
+
+%include cpdedor(eda.sas);
+%dirtycheck (inputfile=final_blank,nlevel=100,inlocal=D:COMPANY SAS\new campaign project,outlocal=D:COMPANY SAS\new campaign project\output);
+
+data miss;
+set Outlocal.Tran_stat_final_bank;
+where metrics like "%MISS";
+nmiss_loc = find(metrics , "_NMISS") -1;
+run;
+
+proc sql;
+select substr(metrics,1,nmiss_loc) into: misslist0 SEPARATED BY " " from miss 
+where details1 <> 0;
+quit;
+
+proc sql;
+select metrics into: misslist1   SEPARATED BY " " from miss 
+where details1 <> 0;
+quit;
+
+%PUT***** misslist0 = &misslist0 *****misslist1 =&misslist1;
+/*create missing value indicator*/
+
+/*
+data final_Bank_ind(drop=1);
+	set h.final_Bank;
+	
+	array mi{*} &misslist1;
+	array x{*} &misslist0:
+	
+	do i-1 to dim(mi);
+		mi(i)=(x{i}=.);
+	end;
+run;
+*/
+
+/*create missing value imputationr*/
+proc stdize data=h.final_Bank reponly method=median out=final_Bank_impute;
+	var &misslist0;
+run;
+
+/*3.*/
+						/*odds ratio computation*/
+proc freq data= final_Bank_impute order=formatted;
+tables defaulted*usage_reason/chisq
+run;
+
+/*HI VS DEBT*/
+
+/*odds ratio= (745/3183)/(396/1384)=0.818014*/
+/*odds ratio= (62.66/66.72)/(33.31/29.01)=0.817914*/
+
+/*HI VS TUITION*/
+/*odds ratio= (48/204)/(745/3183)=0.818014*/
+
+/* relative risk computation*/
+proc freq data= final_Bank_impute order=formatted;
+where STRIP(usage_reason) NE "Tuition Fee";
+tables defaulted*usage_reason/relrisk ;
+run;
+
+/*rr=(745/3928)/(396/1780)=0.85253*/
+
+					Odds Ratio and Relatives Risks
+					Statistic Value		95% Condidence Limits
+Odds Ratio					1.2225		1.0657	1.4023
+Relative Risk	(Column 1)	1.0674		1.0190	1.1181
+Relative Risk	(Column 2)	0.8732		0.7973	0.9563
+
+
+rr(column 1)= (3183/4567)/(745/1141) = 1.0674
+rr(column 2)= (1384/4567)/(396/1141) = 0.8731 */
+/*4.*/
+ods trace on;
+ods select  CrossTabFreqs;
+ods output CrossTabFreqs = table;
+
+proc freq data=final_Bank_impute ;
+table defaulted*occupation/chisq missing out=job;
+run;
+
+ods trace off;
+
+data jobper(keep=job ColPercent);
+length job $10.;
+set table;
+where DEFAULTED = 1 and _type_= '11' ;
+run;
+
+proc sql;
+update jobper
+set job="Blank"
+where missing(job);
+quit;
+
+data jobper_ref_lin(keep=job Percent);
+length job $10.;
+set table;
+where DEFAULTED = 1 and _type_= '10' ;
+job = 'REFERENCE';
+run;
+
+proc sqplot data=jobper;
+series x=job y=ColPercent  / lineattrs=(pattern=1);
+refline '19.94966443' / axis=y;
+run;
+/*5.*/
+proc contents data=final_Bank_impute out=contents(KEEP=NAME	TYPE)	short
+noprint;
+QUIT;
+
+data final_Bank_numeric final_Bank_char;
+set contents ;
+where upcase(strip(NAME)) <> 'DEFAULTED'	and upcase(strip(NAME)) <> 'SDB';
+if type = 1 then output final_Bank_numeric;
+else output	final_Bank_char;
+run;
+
+proc sql noprint;
+select name	into:	.num_list separated by " "	from final_Bank_numeric;
+quit;
+
+proc sql noprint;
+select name	into:	num_list_remove_bal separated by " " from
+final_Bank_numeric
+where name not in	('cur_balance','cust_ID','LORes');
+quit;
+
+proc sql noprint;
+select name	into: char_list separate by " "	from final_Bank_char;
+quit;
+
+&put **** num_list = &num_list;
+&put **** char_list = &char_list;
+&put **** num_list_remove_bal = &num_list_remove_bal;
+
+proc logistic data=final_Bank_impute descending;
+class	&char_list;
+model defaulted= &num_list	/selection=forward;
+run;
+
+proc reg data=final_Bank_impute ; 
+model default=&num_list /vif;
+run;
+/*vif: variance influence factor*/
+/*These factors measure the inflation in the variances of the parameter estimates */
+/*due to the collinearities that exist among the regressor (independent) variables*/
+&put *&char_list;
+
+/*without Class variables */
+proc logistic data=final_Bank_impute desc;
+class occupation usage_reason ;
+model defaulted= debt_to_income num_credit_inquiries num_deliquencies
+num_payment_lines oldest_aging_lines year_at_job/stb;
+run;
+
+/*with Class variables */
+proc logistic data=final_Bank_impute desc;
+class occupation usage_reason ;
+model defaulted= debt_to_income num_credit_inquiries num_deliquencies
+num_payment_lines oldest_aging_lines year_at_job 
+occupation usage_reason/stb;
+run;
+
+/*
+1. First to see if odds ratio confidence limits contain "1"
+2. Compare each level with the leve lthat is not listed in the final model
+3. Better than 1 means the left has higher default when comparing to the right
+4. num_deliquencies odds ratio = 2.264, which means that 1 unit increase in num_deliquencies 
+will be 2.264 times as likely to show default, that is more num_deliquencies have more likelihood than less to be default.
+*/
+/*6.*/
+proc reg data=final_Bank_impute outest=coeficient;
+model Cur_Balance = &num_list_remove_bal./selection=backward;
+output out=regout r=r cookd=cooksk rstudent=rstud diffits=dfits;
+quit;
+
+proc reg data=final_Bank_impute outest=coeffs0;
+model CurBalance=InvBal Total_exposure;
+run;
+
+data influential;
+set regout;
+p=3;
+n=5960;
+cutdfits=2*((p/n)**0.5);
+cutcookd=4/n;
+rstud_i=(abs(rstud)>3);
+dfits_i=(abs(dfits)>cutdfits);
+cookd_i=(cooksd>cutcookd);
+sum_i=rstud_i+dfits_i+cookd_i;
+if sum_i>0 then influ_ind=1;
+else influ_ind=0;
+run;
+
+/*7.*/
+proc reg data=influential outest=coeffs;
+where influ_ind=0;
+model Cur_Balance=InvBal Total_exposure;
+plot (Cur_Balance p. L95. u95) *Total_exposure/overlay;
+run;
+
+proc score data=final_Bank_impute score=coeffs type=parms out=RScoreP;
+var InvBal Total_exposure;
+run;
+
+proc sql;
+select count(*) into :N
+from Rscorep;
+quit;
+
+proc sql;
+create table test as
+select sqrt(sum((Cur_Balance-model1)*(Cur_Balance-model1))/(&N-1)) as rsme 
+from Rscorep;
+quit;
+
+/*8.*/
+ods trace on;
+ods select  ParameterEstimates;
+ods output  ParameterEstimates=stb;
+
+proc logistic data=final_Bank_impute desc;
+class occupation usage_reason;
+model defaulted= debt_to_income num_credit_inquiries num_deliquencies
+num_payment_lines oldest_aging_lines year_at_job 
+occupation usage_reason/stb;
+run;
+
+ods trace off;
+data accumulative;
+set stb (keep=Variable StandardizedEst);
+where variable ne 'Intercept';
+absest = abs(StandardizedEst);
+run;
+
+proc sql;
+create table accumulative1 as
+select *, (select sum(absest) from accumulative) as total,absest/(calculated total)
+as contribution from accumulative
+order by contribution desc;
+quit;
+
+%let n = &sqlobs;
+%put ***&n;
+
+data accumulative2;
+set accumulative1 end=last;
+retain cont1 cont2 cont3 cont4 cont5 cont6 cont7;
+if _n_=1 then cont1 = contribution;
+else if _n_=2 then cont2= cont1+contribution;
+else if _n_=3 then cont3= cont2+contribution;
+else if _n_=4 then cont4= cont3+contribution;
+else if _n_=5 then cont5= cont4+contribution;
+else cont 6 = cont 5+contribution;
+
+if last then output;
+keep cont1 cont2 cont3 cont4 cont5 cont6;
+run;
+
+proc transpose data accumulative2 out=accumulative3(drop=_NAME_
+rename=(COL1=accu_contribution));
+quit;
+
+data=accumulative4;
+merge accumulative1(drop=total) accumulative3;
+run;
+
+proc sgplot data=accumulative4;
+series x=Variable y=accu_contribution / lineattrs=(pattern=1);
+refline '0.8' / axis=y;
+run;
+
