@@ -1,0 +1,205 @@
+data sales;
+input transid item $;
+cards;
+1 beer
+1 diaper
+1 diaper
+1 apple
+1 chips
+1 peach
+2 diaper
+2 beer
+2 chips
+2 orange
+2 juice
+2 snack
+2 milk
+3 soda
+3 chips
+3 milk
+4 soup
+4 beer
+4 diaper
+4 milk
+4 cream
+5 soda
+5 coffee
+5 milk
+5 grape
+6 beer
+6 chips
+;
+run;
+
+/*****dedup to ensure all items are unique in the transaction******************************/
+proc sort data=sales nodup;
+by transid item;
+quit;
+
+proc transpose data=sales out=sake1;
+by transid;
+var item;
+quit;
+
+proc sql noprint;
+select count(*) into: num_tran from sales1;
+quit;
+
+%put&num_tran;
+
+/*****Listing items in each transcation ***********************************/
+
+%macro tran_content (transid=);
+%global item_&transid n&transid.;
+
+data da&transid.;
+set sales;
+where transid=&transid ;
+run;
+
+proc sql noprint;
+select item into: item_&transid separated by '#' from da&transid.
+quit;
+
+%let n&transid.= &sqlobs;
+
+%mend;
+
+
+
+%tran_content(transid=1);
+
+%put**************** n = &n1.;
+%put****************item = &item_1.;
+
+%tran_content(transid=2);
+
+%put**************** n = &n2.;
+%put****************item = &item_2.;
+
+
+
+
+/*****Discovering unique pair in each transcation ***********************************/
+
+%macro loop(transid=) ;
+
+%do k=1 %to &&n&transid;
+
+
+%macro aa1;
+
+data a_&transid._&k (where=(a ne b));
+length a b $15;
+length c $50.;
+
+%do i=1 %to &&n&transid ;
+a= "%scan(&&item_&transid, &k, #)" ;
+b= "%scan(&&item_&transid, &i, #)" ;
+c= catx ('*', a,b);
+
+output;
+%end;
+run;
+
+
+%mend aa1;
+
+%aa1;
+
+proc append data=a_&transid._&k base= all_&transid force;
+quit;
+
+
+%end;
+
+data all_&transid.;
+set all_&transid.;
+transaction = &transid.;
+if a>b;
+run;
+
+%mend loop;
+
+
+
+/*****End discovering unique pair in each transcation ***********************************/
+
+
+
+
+/***** Loop all transactions for discovering unique pair in each transcation ***********************************/
+%macro all_trans_comb;
+
+%do f=1 %to &num_tran;
+
+%tran_content(transid=&f);
+%loop(transid=&f);
+
+proc append data=all_&f base=all_trans force;
+quit;
+
+%end;
+
+
+%mend;
+
+%all_trans_comb;
+
+/***** Count all many pairs in all transcation ***********************************/
+%macro select_pair(a=,b=);
+%global n_pair;
+
+data select_&a._&b.;
+set all_trans ;
+if (strip(upcase(a))="&a." and (strip(upcase(b))="&b." and (strip(upcase(b))="&a.";
+run;
+
+proc sql;
+select count(*) into: n_pair from select_&a._&b. ;
+quit;
+
+
+%mend;
+
+
+
+/***** Count all many particular items in all transcation ***********************************/
+%macro select_single(a=);
+%global n_&a;
+data select_&a.;
+set sales ;
+if (strip(upcase(a))="&a." ;
+run;
+
+proc sql;
+select count(*) into: n_a. from select_&a. ;
+quit;
+
+
+%mend;
+
+
+
+
+/***** Calculation ***********************************/
+
+%macro calculation(c=.d=);
+
+%select_pair(a=&c,b=&d);
+%select_single(a=&c);
+%select_single(a=&d);
+
+data result;
+confidence= %sysevalf (&n_pair/ &&n_&c.);
+exp_confidence = %sysevalf(&&n_&d./ &num_tran.);
+lift= confidence/exp_confidence;
+run;
+
+
+%mend calculation;
+
+
+
+%calculation(c=BEER, d=DIAPER) ;
+%calculation(c=BEER, d=CHIPS) ;
